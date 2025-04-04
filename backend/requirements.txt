@@ -3,5 +3,7 @@ uvicorn
 psycopg2-binary
 sqlalchemy 
 redis
+python-dotenv
+
 
 

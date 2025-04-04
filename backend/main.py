@@ -1,15 +1,31 @@
+import os
 import time
 import json
 import redis
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.exc import OperationalError
 
-# Configuração do banco (conectando ao serviço `db` do Docker Compose)
-DATABASE_URL = "postgresql://user:password@db:5432/mydb"
-redis_client = redis.Redis(host='redis', port=6379, db=0, decode_responses=True)
+# Carrega variáveis de ambiente
+load_dotenv()
+
+# Configurações do Postgres via .env
+POSTGRES_USER = os.getenv("POSTGRES_USER")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+POSTGRES_DB = os.getenv("POSTGRES_DB")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT")
+
+# Configura Redis via .env
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+
+# Conexão com o banco e redis
+DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -17,15 +33,14 @@ Base = declarative_base()
 
 app = FastAPI()
 
-# Modelo de usuário no banco
-table_name = "users"
+# Modelo ORM do usuário
 class User(Base):
-    __tablename__ = table_name
+    __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     password = Column(String)
 
-# Esperar o banco estar pronto
+# Aguarda o banco de dados ficar pronto
 def wait_for_db():
     retries = 5
     while retries > 0:
@@ -59,7 +74,7 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# Dependência do banco
+# Dependência para obter sessão do banco
 def get_db():
     db = SessionLocal()
     try:
@@ -85,7 +100,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == request.username).first()
     if not user or user.password != request.password:
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
-    
+
     return {"message": f"Bem-vindo, {request.username}!"}
 
 # Rota para listar usuários com cache
@@ -93,7 +108,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 def get_users(db: Session = Depends(get_db)):
     cache_key = "users_cache"
     cached_users = redis_client.get(cache_key)
-    
+
     if cached_users:
         print("✅ Retornando do cache...")
         return json.loads(cached_users)
@@ -101,8 +116,6 @@ def get_users(db: Session = Depends(get_db)):
     users = db.query(User).all()
     result = [UserResponse.from_orm(user).dict() for user in users]
 
-    # Cache por 30 segundos
     redis_client.setex(cache_key, 30, json.dumps(result))
-
     print("📦 Dados salvos no cache!")
     return result
