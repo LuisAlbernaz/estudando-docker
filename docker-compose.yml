@@ -8,6 +8,7 @@ services:
       - "8000:8000"
     depends_on:
       - db
+      - redis
 
   db:
     image: postgres:13
@@ -32,6 +33,11 @@ services:
     depends_on:
       - backend
       - frontend
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
 
 volumes:
   postgres_data:

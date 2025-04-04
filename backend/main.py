@@ -1,4 +1,6 @@
 import time
+import json
+import redis
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, String, create_engine
@@ -7,6 +9,7 @@ from sqlalchemy.exc import OperationalError
 
 # Configuração do banco (conectando ao serviço `db` do Docker Compose)
 DATABASE_URL = "postgresql://user:password@db:5432/mydb"
+redis_client = redis.Redis(host='redis', port=6379, db=0, decode_responses=True)
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -22,8 +25,7 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     password = Column(String)
 
-# Função para aguardar o banco de dados
-
+# Esperar o banco estar pronto
 def wait_for_db():
     retries = 5
     while retries > 0:
@@ -38,11 +40,10 @@ def wait_for_db():
     print("❌ Banco de dados não respondeu a tempo.")
     raise Exception("Banco de dados não está disponível.")
 
-# Esperar banco antes de criar tabelas
 wait_for_db()
 Base.metadata.create_all(bind=engine)
 
-# Pydantic models
+# Schemas Pydantic
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -51,7 +52,14 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
 
-# Dependência para obter a sessão do banco
+class UserResponse(BaseModel):
+    id: int
+    username: str
+
+    class Config:
+        from_attributes = True
+
+# Dependência do banco
 def get_db():
     db = SessionLocal()
     try:
@@ -80,7 +88,21 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     
     return {"message": f"Bem-vindo, {request.username}!"}
 
+# Rota para listar usuários com cache
 @app.get("/users")
 def get_users(db: Session = Depends(get_db)):
+    cache_key = "users_cache"
+    cached_users = redis_client.get(cache_key)
+    
+    if cached_users:
+        print("✅ Retornando do cache...")
+        return json.loads(cached_users)
+
     users = db.query(User).all()
-    return users
+    result = [UserResponse.from_orm(user).dict() for user in users]
+
+    # Cache por 30 segundos
+    redis_client.setex(cache_key, 30, json.dumps(result))
+
+    print("📦 Dados salvos no cache!")
+    return result
